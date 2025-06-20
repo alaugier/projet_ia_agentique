@@ -221,26 +221,29 @@ class AI900SourceMatcher:
         
         return list(set(found_concepts))
     
-    def find_best_source(self, question_text: str, top_k: int = 10) -> Tuple[str, float]:
-        """Trouve la meilleure source pour une question donnée"""
+    def find_best_sources(self, question_text: str, top_k: int = 5) -> list[tuple[str, float]]:
+        """
+        Trouve les meilleures sources pour une question donnée, avec scores.
+
+        Args:
+            question_text: La question à rechercher.
+            top_k: Nombre maximal de sources à retourner.
+
+        Returns:
+            Liste de tuples (url, score) ordonnée du meilleur au moins bon.
+        """
         if not self.is_loaded or self.content_df is None or self.vectorizer is None:
             print(f"⚠️  WARNING: Base de données non chargée, utilisation du fallback")
-            return self.get_fallback_url(question_text), 0.0
+            return [(self.get_fallback_url(question_text), 0.0)]
         
         try:
-            # Vectoriser la question
             question_vector = self.vectorizer.transform([question_text.lower()])
-            
-            # Calculer la similarité cosinus
             similarities = cosine_similarity(question_vector, self.content_vectors).flatten()
-            
-            # Obtenir les meilleurs résultats
             top_indices = np.argsort(similarities)[::-1]
             
-            best_score = -1.0
-            best_url = self.get_fallback_url(question_text)
-            
             concepts = self.extract_key_concepts(question_text)
+            
+            scored_sources = []
             
             for rank, idx in enumerate(top_indices):
                 if rank >= top_k:
@@ -253,10 +256,8 @@ class AI900SourceMatcher:
                 unit_name = row['unit_name'].lower()
                 content = row['content'].lower()
                 
-                # Score final avec bonus
                 final_score = base_score + (top_k - rank) * 0.02
                 
-                # Bonus pour les concepts correspondants
                 for concept in concepts:
                     concept_text = concept.replace('_', ' ')
                     if concept_text in module_name:
@@ -265,30 +266,29 @@ class AI900SourceMatcher:
                         final_score += 0.7
                     elif concept_text in content:
                         final_score += 0.2
-
-                # Bonus pour les URLs spécifiques
+                
                 if '/training/modules/' in url:
                     final_score += 0.1
                 elif '/training/paths/' in url:
                     final_score += 0.05
                 elif '/credentials/certifications/' in url:
                     final_score -= 0.1
-
+                
                 final_score = max(0.0, final_score)
                 
-                if final_score > best_score:
-                    best_score = final_score
-                    best_url = url
+                if final_score > 0.05:
+                    scored_sources.append((url, final_score))
             
-            if best_score <= 0.05:
-                best_url = self.get_fallback_url(question_text)
-                best_score = 0.0
+            if not scored_sources:
+                # Aucun bon score, fallback unique
+                scored_sources = [(self.get_fallback_url(question_text), 0.0)]
             
-            return best_url, best_score
-            
+            return scored_sources
+        
         except Exception as e:
-            print(f"❌ ERREUR lors de la recherche de source: {e}")
-            return self.get_fallback_url(question_text), 0.0
+            print(f"❌ ERREUR lors de la recherche des meilleures sources: {e}")
+            return [(self.get_fallback_url(question_text), 0.0)]
+
     
     def get_fallback_url(self, question_text: str = "") -> str:
         """Retourne une URL de fallback basée sur l'analyse de la question"""
@@ -334,13 +334,15 @@ def get_source_matcher():
 source_matcher = get_source_matcher()
 
 @tool
-def add_sources_to_quiz_tool(quiz_questions_json_string: str) -> str:
+def add_sources_to_quiz_tool(quiz_questions_json_string: str, max_sources: int = 3) -> str:
     """
-    Prend une chaîne JSON de questions de quiz et ajoute une source_url pertinente à chaque question
-    en utilisant la base de données locale AI-900 scrapée pour une recherche sémantique précise.
+    Prend une chaîne JSON de questions de quiz et ajoute des sources pertinentes à chaque question
+    en utilisant la base de données locale AI-900 pour une recherche sémantique.
 
     Args:
-        quiz_questions_json_string: Une chaîne JSON représentant la liste des questions du quiz
+        quiz_questions_json_string: Une chaîne JSON représentant la liste des questions du quiz.
+        max_sources: Nombre maximal de sources à ajouter par question (par défaut 3).
+
     Returns:
         Une chaîne JSON des questions du quiz mises à jour, incluant les URL de source.
     """
@@ -349,7 +351,6 @@ def add_sources_to_quiz_tool(quiz_questions_json_string: str) -> str:
     try:
         questions = json.loads(quiz_questions_json_string)
         
-        # Vérifier que le matcher est bien chargé
         if not source_matcher.is_loaded:
             print("⚠️  WARNING: Matcher non chargé, rechargement...")
             source_matcher = get_source_matcher()
@@ -359,20 +360,24 @@ def add_sources_to_quiz_tool(quiz_questions_json_string: str) -> str:
             question_text = q.get('question', '')
             print(f"🔍 Traitement question {i+1}/{len(questions)}: '{question_text[:50]}...'")
             
-            # Trouver la meilleure source
-            best_url, confidence_score = source_matcher.find_best_source(question_text)
+            # Trouver les meilleures sources (liste de tuples)
+            best_sources = source_matcher.find_best_sources(question_text, top_k=max_sources)
             
-            print(f"✅ Source trouvée (score: {confidence_score:.3f}): {best_url}")
+            # Extraire uniquement les URLs
+            source_urls = [url for url, score in best_sources]
+            confidence_scores = [round(score, 3) for url, score in best_sources]
             
-            # Ajouter les informations de source
-            q['source_url'] = best_url
-            q['source_confidence'] = round(confidence_score, 3)
+            print(f"✅ Sources trouvées (scores): {list(zip(source_urls, confidence_scores))}")
+            
+            # Ajouter les informations de source sous forme de liste
+            q['source_urls'] = source_urls
+            q['source_confidences'] = confidence_scores
             
             updated_questions.append(q)
         
         print(f"🎉 Traitement terminé: {len(updated_questions)} questions avec sources")
         return json.dumps(updated_questions, indent=2, ensure_ascii=False)
-        
+    
     except json.JSONDecodeError as e:
         error_msg = f"❌ ERREUR JSON: {e}. Entrée: {quiz_questions_json_string[:200]}..."
         print(error_msg)
@@ -381,6 +386,7 @@ def add_sources_to_quiz_tool(quiz_questions_json_string: str) -> str:
         error_msg = f"❌ ERREUR générale: {e}. Entrée: {quiz_questions_json_string[:200]}..."
         print(error_msg)
         return error_msg
+
 
 @tool
 def reload_ai900_database(csv_path: str = "ai900_content.csv") -> str:

@@ -24,37 +24,40 @@ from smolagents.agents import ActionStep, MultiStepAgent
 from smolagents.memory import MemoryStep
 from smolagents.utils import _is_package_available
 
+import json
+from tools.final_answer import final_answer_tool  # Fonction qui produit le markdown du quiz
+import gradio as gr
 
-def pull_messages_from_step(
-    step_log: MemoryStep,
-):
+
+import re
+import gradio as gr
+
+def pull_messages_from_step(step_log: MemoryStep):
     """Extract ChatMessage objects from agent steps with proper nesting"""
-    import gradio as gr
-
     if isinstance(step_log, ActionStep):
-        # Output the step number
         step_number = f"Step {step_log.step_number}" if step_log.step_number is not None else ""
-        yield gr.ChatMessage(role="assistant", content=f"**{step_number}**")
+        yield ("chatmessage", f"**{step_number}**")
 
-        # First yield the thought/reasoning from the LLM
         if hasattr(step_log, "model_output") and step_log.model_output is not None:
-            # Clean up the LLM output
             model_output = step_log.model_output.strip()
-            # Remove any trailing <end_code> and extra backticks, handling multiple possible formats
-            model_output = re.sub(r"```\s*<end_code>", "```", model_output)  # handles ```<end_code>
-            model_output = re.sub(r"<end_code>\s*```", "```", model_output)  # handles <end_code>```
-            model_output = re.sub(r"```\s*\n\s*<end_code>", "```", model_output)  # handles ```\n<end_code>
+            model_output = re.sub(r"```\s*<end_code>", "```", model_output)
+            model_output = re.sub(r"<end_code>\s*```", "```", model_output)
+            model_output = re.sub(r"```\s*\n\s*<end_code>", "```", model_output)
             model_output = model_output.strip()
-            yield gr.ChatMessage(role="assistant", content=model_output)
 
-        # For tool calls, create a parent message
+            # Simple heuristique markdown : 
+            # si la sortie contient des titres markdown (#) ou des listes (- )
+            if re.search(r"^#{1,6} ", model_output, re.MULTILINE) or re.search(r"^- ", model_output, re.MULTILINE):
+                yield ("markdown", model_output)
+            else:
+                yield ("chatmessage", model_output)
+
+        # Le reste reste inchangé, mais yield ("chatmessage", contenu)
         if hasattr(step_log, "tool_calls") and step_log.tool_calls is not None:
             first_tool_call = step_log.tool_calls[0]
             used_code = first_tool_call.name == "python_interpreter"
             parent_id = f"call_{len(step_log.tool_calls)}"
 
-            # Tool call becomes the parent message with timing info
-            # First we will handle arguments based on type
             args = first_tool_call.arguments
             if isinstance(args, dict):
                 content = str(args.get("answer", str(args)))
@@ -62,123 +65,59 @@ def pull_messages_from_step(
                 content = str(args).strip()
 
             if used_code:
-                # Clean up the content by removing any end code tags
-                content = re.sub(r"```.*?\n", "", content)  # Remove existing code blocks
-                content = re.sub(r"\s*<end_code>\s*", "", content)  # Remove end_code tags
+                content = re.sub(r"```.*?\n", "", content)
+                content = re.sub(r"\s*<end_code>\s*", "", content)
                 content = content.strip()
                 if not content.startswith("```python"):
                     content = f"```python\n{content}\n```"
 
-            parent_message_tool = gr.ChatMessage(
-                role="assistant",
-                content=content,
-                metadata={
-                    "title": f"🛠️ Used tool {first_tool_call.name}",
-                    "id": parent_id,
-                    "status": "pending",
-                },
-            )
-            yield parent_message_tool
+            yield ("chatmessage", content)
 
-            # Nesting execution logs under the tool call if they exist
-            if hasattr(step_log, "observations") and (
-                step_log.observations is not None and step_log.observations.strip()
-            ):  # Only yield execution logs if there's actual content
+            if hasattr(step_log, "observations") and step_log.observations and step_log.observations.strip():
                 log_content = step_log.observations.strip()
                 if log_content:
                     log_content = re.sub(r"^Execution logs:\s*", "", log_content)
-                    yield gr.ChatMessage(
-                        role="assistant",
-                        content=f"{log_content}",
-                        metadata={"title": "📝 Execution Logs", "parent_id": parent_id, "status": "done"},
-                    )
+                    yield ("chatmessage", log_content)
 
-            # Nesting any errors under the tool call
             if hasattr(step_log, "error") and step_log.error is not None:
-                yield gr.ChatMessage(
-                    role="assistant",
-                    content=str(step_log.error),
-                    metadata={"title": "💥 Error", "parent_id": parent_id, "status": "done"},
-                )
+                yield ("chatmessage", str(step_log.error))
 
-            # Update parent message metadata to done status without yielding a new message
-            parent_message_tool.metadata["status"] = "done"
-
-        # Handle standalone errors but not from tool calls
         elif hasattr(step_log, "error") and step_log.error is not None:
-            yield gr.ChatMessage(role="assistant", content=str(step_log.error), metadata={"title": "💥 Error"})
+            yield ("chatmessage", str(step_log.error))
 
-        # Calculate duration and token information
         step_footnote = f"{step_number}"
         if hasattr(step_log, "input_token_count") and hasattr(step_log, "output_token_count"):
-            token_str = (
-                f" | Input-tokens:{step_log.input_token_count:,} | Output-tokens:{step_log.output_token_count:,}"
-            )
+            token_str = f" | Input-tokens:{step_log.input_token_count:,} | Output-tokens:{step_log.output_token_count:,}"
             step_footnote += token_str
         if hasattr(step_log, "duration"):
             step_duration = f" | Duration: {round(float(step_log.duration), 2)}" if step_log.duration else None
             step_footnote += step_duration
         step_footnote = f"""<span style="color: #bbbbc2; font-size: 12px;">{step_footnote}</span> """
-        yield gr.ChatMessage(role="assistant", content=f"{step_footnote}")
-        yield gr.ChatMessage(role="assistant", content="-----")
+        yield ("chatmessage", step_footnote)
+        yield ("chatmessage", "-----")
 
-
-def stream_to_gradio(
-    agent,
-    task: str,
-    reset_agent_memory: bool = False,
-    additional_args: Optional[dict] = None,
-):
-    """Runs an agent with the given task and streams the messages from the agent as gradio ChatMessages."""
-    if not _is_package_available("gradio"):
-        raise ModuleNotFoundError(
-            "Please install 'gradio' extra to use the GradioUI: `pip install 'smolagents[gradio]'`"
-        )
+def stream_to_gradio(agent, task: str, reset_agent_memory: bool = False, additional_args: Optional[dict] = None):
     import gradio as gr
-
-    total_input_tokens = 0
-    total_output_tokens = 0
-
     for step_log in agent.run(task, stream=True, reset=reset_agent_memory, additional_args=additional_args):
-        # Track tokens if model provides them
-        if hasattr(agent.model, "last_input_token_count"):
-            # Mise à jour des tokens d'entrée
-            if hasattr(agent.model, 'token_usage') and agent.model.token_usage is not None:
-                if hasattr(agent.model.token_usage, 'input_tokens') and agent.model.token_usage.input_tokens is not None:
-                    total_input_tokens += agent.model.token_usage.input_tokens
-                # else: input_tokens might be None if the model call failed or returned no tokens.
-            elif agent.model.last_input_token_count is not None:
-                # Fallback pour les versions plus anciennes ou si 'token_usage' n'est pas présent
-                total_input_tokens += agent.model.last_input_token_count
-            # else: last_input_token_count might also be None. In this case, total_input_tokens won't be updated.
+        for msg_type, content in pull_messages_from_step(step_log):
+            if msg_type == "markdown":
+                yield gr.ChatMessage(role="assistant", content=content)
+            else:
+                yield gr.ChatMessage(role="assistant", content=content)
 
-            # Mise à jour des tokens de sortie (similaire pour last_output_token_count ou output_tokens)
-            if hasattr(agent.model, 'token_usage') and agent.model.token_usage is not None:
-                if hasattr(agent.model.token_usage, 'output_tokens') and agent.model.token_usage.output_tokens is not None:
-                    total_output_tokens += agent.model.token_usage.output_tokens
-                # else: output_tokens might be None.
-            elif agent.model.last_output_token_count is not None:
-                # Fallback pour les versions plus anciennes ou si 'token_usage' n'est pas présent
-                total_output_tokens += agent.model.last_output_token_count
-            # else: last_output_token_count might also be None.
-            
-            if isinstance(step_log, ActionStep):
-                step_log.input_token_count = agent.model.last_input_token_count
-                step_log.output_token_count = agent.model.last_output_token_count
-
-        for message in pull_messages_from_step(
-            step_log,
-        ):
-            yield message
-
-    final_answer = step_log  # Last log is the run's final_answer
+    final_answer = step_log  # dernier step de run
     final_answer = handle_agent_output_types(final_answer)
 
     if isinstance(final_answer, AgentText):
-        yield gr.ChatMessage(
-            role="assistant",
-            content=f"**Final answer:**\n{final_answer.to_string()}\n",
-        )
+        content = final_answer.to_string().strip()
+        if content.startswith("## 📘 Quiz") or content.startswith("# Quiz d'Intelligence Artificielle"):
+            # Ne rien afficher ici car déjà capturé dans quiz_markdown
+            pass
+        else:
+            yield gr.ChatMessage(
+                role="assistant",
+                content=f"**Final answer:**\n{content}\n",
+            )
     elif isinstance(final_answer, AgentImage):
         yield gr.ChatMessage(
             role="assistant",
@@ -191,7 +130,6 @@ def stream_to_gradio(
         )
     else:
         yield gr.ChatMessage(role="assistant", content=f"**Final answer:** {str(final_answer)}")
-
 
 class GradioUI:
     """A one-line interface to launch your agent in Gradio"""
@@ -216,6 +154,28 @@ class GradioUI:
             messages.append(msg)
             yield messages
         yield messages
+    
+    def interact_with_agent_with_quiz_markdown(self, prompt, messages, quiz_md_component):
+        messages.append(gr.ChatMessage(role="user", content=prompt))
+        yield messages, ""
+
+        markdown_text = ""
+
+        for msg in stream_to_gradio(self.agent, task=prompt, reset_agent_memory=False):
+            messages.append(msg)
+
+            content = ""
+            if hasattr(msg, "content"):
+                content = msg.content if isinstance(msg.content, str) else ""
+
+            # Si le contenu ressemble à un markdown quiz (tu peux affiner ce test)
+            if content.startswith("## 📘 Quiz") or content.startswith("# Quiz d'Intelligence Artificielle"):
+                markdown_text = content
+                yield messages, markdown_text
+            else:
+                yield messages, markdown_text
+
+        yield messages, markdown_text
 
     def upload_file(
         self,
@@ -292,6 +252,7 @@ class GradioUI:
                 resizeable=True,
                 scale=1,
             )
+            quiz_markdown = gr.Markdown(label="Quiz AI-900 (Markdown formaté)")
             # If an upload folder is provided, enable the upload feature
             if self.file_upload_folder is not None:
                 upload_file = gr.File(label="Upload a file")
@@ -306,7 +267,7 @@ class GradioUI:
                 self.log_user_message,
                 [text_input, file_uploads_log],
                 [stored_messages, text_input],
-            ).then(self.interact_with_agent, [stored_messages, chatbot], [chatbot])
+            ).then(self.interact_with_agent_with_quiz_markdown,[stored_messages, chatbot, quiz_markdown],[chatbot, quiz_markdown],)
 
         demo.launch(debug=True, share=True, **kwargs)
 

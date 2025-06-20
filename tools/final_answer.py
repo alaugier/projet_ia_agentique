@@ -1,6 +1,5 @@
-# tools/final_answer.py
-from smolagents import tool
 import json
+from smolagents import tool
 
 @tool
 def final_answer_tool(questions_json_string: str) -> str:
@@ -8,17 +7,9 @@ def final_answer_tool(questions_json_string: str) -> str:
     Formate les questions AI-900 pour un affichage clair en Markdown, avec liens cliquables vers les sources.
 
     Args:
-        questions_json_string (str): Chaîne JSON représentant une liste de questions au format :
-            [
-                {
-                    "question": "Texte de la question",
-                    "options": ["A. ...", "B. ...", ...],
-                    "correct_answer": "B. ...",
-                    "explanation": "Explication de la réponse",
-                    "source_url": "https://..."
-                },
-                ...
-            ]
+        questions_json_string (str): Une chaîne JSON représentant une liste de questions,
+            chaque question étant un dictionnaire avec les clés:
+            "question", "options", "correct_answer", "explanation", "source_url".
 
     Returns:
         str: Une chaîne Markdown lisible contenant le QCM formaté avec explication et source.
@@ -26,8 +17,13 @@ def final_answer_tool(questions_json_string: str) -> str:
     try:
         questions = json.loads(questions_json_string)
 
+        if not isinstance(questions, list):
+            return "❌ Erreur : JSON ne contient pas une liste."
+
         output = "## 📘 Quiz AI-900 généré\n\n"
         for i, q in enumerate(questions, 1):
+            if not isinstance(q, dict):
+                return f"❌ Erreur : un élément n'est pas un dictionnaire: {q}"
             output += f"### ❓ Question {i} : {q.get('question', 'N/A')}\n\n"
             for option in q.get('options', []):
                 output += f"- {option}\n"
@@ -38,13 +34,11 @@ def final_answer_tool(questions_json_string: str) -> str:
             if source_url:
                 output += f"🔗 **Source :** [Documentation Microsoft Azure AI]({source_url})\n"
             else:
-                output += "🔗 **Source :** Aucune source disponible.\n"
+                output += f"🔗 **Source :** Aucune source disponible.\n"
 
             output += "\n---\n\n"
 
         return output
 
-    except json.JSONDecodeError:
-        return f"❌ Erreur : le LLM n’a pas renvoyé un JSON valide. Voici la sortie brute :\n\n{questions_json_string}"
     except Exception as e:
-        return f"❌ Erreur inattendue : {e}\n\nSortie brute :\n{questions_json_string}"
+        return f"❌ Erreur inattendue : {e}"
