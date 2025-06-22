@@ -1,12 +1,10 @@
 # tools/source_adder_tool.py
 import json
 import pandas as pd
-import re
-from typing import List, Dict, Tuple
+import numpy as np
+from typing import List, Dict, Optional
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from pathlib import Path
 import os
 import nltk
 from nltk.corpus import stopwords
@@ -15,17 +13,13 @@ from smolagents import tool
 # Assurez-vous que les stop words sont téléchargés
 try:
     nltk.data.find('corpora/stopwords')
-except nltk.downloader.DownloadError:
+except LookupError:
     nltk.download('stopwords')
 
-class AI900SourceMatcher:
-    def __init__(self, csv_path: str = "ai900_content.csv"):
-        """
-        Initialise le matcher avec la base de données CSV
-        
-        Args:
-            csv_path: Chemin vers le fichier CSV contenant le contenu AI-900 scrapé
-        """
+class SourceMatcher:
+    """Classe pour matcher les questions avec les sources pertinentes du CSV"""
+    
+    def __init__(self, csv_path: str = "tools/ai900_content.csv"):
         self.csv_path = csv_path
         self.content_df = None
         self.vectorizer = None
@@ -34,15 +28,14 @@ class AI900SourceMatcher:
         self.load_data()
     
     def load_data(self):
-        """Charge et prépare les données du CSV avec gestion d'erreurs améliorée"""
+        """Charge et prépare les données du CSV"""
         try:
-            # Essai de plusieurs chemins possibles
+            # Essayer plusieurs chemins possibles
             possible_paths = [
                 self.csv_path,
-                os.path.join(os.path.dirname(__file__), self.csv_path),
                 os.path.join(os.path.dirname(__file__), "ai900_content.csv"),
                 os.path.join(os.getcwd(), "tools", "ai900_content.csv"),
-                os.path.join(os.getcwd(), "ai900_content.csv")
+                "ai900_content.csv"
             ]
             
             csv_found = False
@@ -50,375 +43,334 @@ class AI900SourceMatcher:
                 if os.path.exists(path):
                     self.csv_path = path
                     csv_found = True
-                    print(f"✅ CSV trouvé: {path}")
+                    print(f"✅ CSV trouvé à : {path}")
                     break
             
             if not csv_found:
-                print(f"❌ ERREUR: Fichier CSV non trouvé dans les chemins suivants:")
-                for path in possible_paths:
-                    print(f"   - {path}")
-                self.content_df = None
-                self.is_loaded = False
+                print(f"❌ CSV non trouvé dans les chemins : {possible_paths}")
                 return
             
+            # Charger le CSV
             self.content_df = pd.read_csv(self.csv_path)
+            print(f"📊 CSV chargé avec {len(self.content_df)} lignes")
             
             # Vérifier les colonnes requises
             required_columns = ['module_name', 'unit_name', 'content', 'source_url']
             missing_columns = [col for col in required_columns if col not in self.content_df.columns]
             
             if missing_columns:
-                print(f"❌ ERREUR: Colonnes manquantes dans le CSV: {missing_columns}")
-                print(f"Colonnes disponibles: {list(self.content_df.columns)}")
-                self.content_df = None
-                self.is_loaded = False
+                print(f"❌ Colonnes manquantes : {missing_columns}")
+                print(f"📋 Colonnes disponibles : {list(self.content_df.columns)}")
                 return
             
-            # Nettoyer les données
-            self.content_df = self.content_df.dropna(subset=['module_name', 'unit_name', 'content', 'source_url'])
+            # Nettoyer les données - filtrer les lignes avec content null
+            self.content_df = self.content_df.dropna(subset=['content'])
+            print(f"🧹 Après nettoyage : {len(self.content_df)} lignes")
             
-            # Générer les URLs à partir des noms de modules et unités
-            self.content_df['url'] = self.content_df.apply(self._generate_url_from_names, axis=1)
+            if len(self.content_df) == 0:
+                print("❌ Aucune donnée utilisable après nettoyage")
+                return
             
-            # Créer un texte combiné pour la recherche sémantique
-            self.content_df['search_text'] = (
+            # Créer le texte combiné pour la vectorisation
+            self.content_df['combined_text'] = (
                 self.content_df['module_name'].astype(str) + " " + 
                 self.content_df['unit_name'].astype(str) + " " + 
-                self.content_df['content'].astype(str) + " " + 
-                self.content_df['source_url'].astype(str)
+                self.content_df['content'].astype(str)
             ).str.lower()
             
-            # Initialiser le vectorizer et les vecteurs
+            # Initialiser le vectorizer
+            try:
+                french_stopwords = set(stopwords.words('french'))
+                english_stopwords = set(stopwords.words('english'))
+                combined_stopwords = list(french_stopwords.union(english_stopwords))
+            except:
+                # Fallback si les stopwords ne sont pas disponibles
+                combined_stopwords = ['le', 'de', 'et', 'à', 'un', 'il', 'être', 'et', 'en', 'avoir', 'que', 'pour', 'dans', 'ce', 'son', 'une', 'sur', 'avec', 'ne', 'se', 'pas', 'tout', 'plus', 'par', 'grand', 'comme', 'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 'to', 'was', 'were', 'will', 'with']
+            
             self.vectorizer = TfidfVectorizer(
-                max_features=5000,
-                stop_words=stopwords.words('french'),
-                ngram_range=(1, 2),
+                max_features=3000,
+                stop_words=combined_stopwords,
+                ngram_range=(1, 3),
                 min_df=1,
-                max_df=0.95
+                max_df=0.85,
+                token_pattern=r'\b[a-zA-ZÀ-ÿ]{2,}\b'
             )
             
-            self.content_vectors = self.vectorizer.fit_transform(self.content_df['search_text'])
-            self.is_loaded = True
+            # Vectoriser le contenu
+            self.content_vectors = self.vectorizer.fit_transform(self.content_df['combined_text'])
+            print(f"🔢 Vectorisation terminée : {self.content_vectors.shape}")
             
-            print(f"✅ Base de données AI-900 chargée avec succès: {len(self.content_df)} entrées")
+            self.is_loaded = True
+            print("✅ SourceMatcher initialisé avec succès")
             
         except Exception as e:
-            print(f"❌ ERREUR lors du chargement des données CSV: {e}")
-            self.content_df = None
-            self.vectorizer = None
-            self.content_vectors = None
+            print(f"❌ Erreur lors du chargement des données : {e}")
+            import traceback
+            traceback.print_exc()
             self.is_loaded = False
     
-    def _generate_url_from_names(self, row) -> str:
-        """Génère une URL Microsoft Learn à partir du nom du module et de l'unité"""
-        module_name_raw = str(row['module_name'])
-        unit_name_raw = str(row['unit_name'])
-        
-        module_name_lower = module_name_raw.lower()
-        unit_name_lower = unit_name_raw.lower()
-
-        # Mapping amélioré avec URLs plus précises
-        precise_url_mapping = {
-            # AI Fundamentals Overview
-            "vue d'ensemble de l'ia": ('get-started-ai-fundamentals', 'module'),
-            "introduction à l'ia": ('get-started-ai-fundamentals', 'module'),
-            'comprendre le machine learning': ('fundamentals-machine-learning', 'module'),
-            'apprentissage supervisé': ('fundamentals-machine-learning', 'module'),
-            'apprentissage non supervisé': ('fundamentals-machine-learning', 'module'),
-            'apprentissage par renforcement': ('fundamentals-machine-learning', 'module'),
-
-            # Computer Vision
-            'vision par ordinateur': ('explore-computer-vision-microsoft-azure', 'path'),
-            'analyser des images': ('analyze-images-computer-vision', 'module'),
-            'classifier des images': ('classify-images-custom-vision', 'module'),
-            'détecter des objets': ('detect-objects-images', 'module'),
-            'reconnaissance optique': ('read-text-computer-vision', 'module'),
-            'form recognizer': ('analyze-receipts-form-recognizer', 'module'),
-            
-            # Natural Language Processing
-            'traitement en langage naturel': ('explore-natural-language-processing', 'path'),
-            'analyse de texte': ('analyze-text-with-text-analytics-service', 'module'),
-            'traduction': ('translate-text-with-translation-service', 'module'),
-            'compréhension du langage': ('create-language-understanding-model', 'module'),
-            
-            # Bots
-            'bot': ('build-chat-bot-with-azure-bot-service', 'module'),
-            'chatbot': ('build-chat-bot-with-azure-bot-service', 'module'),
-            'azure bot service': ('build-chat-bot-with-azure-bot-service', 'module'),
-
-            # Speech
-            'reconnaissance vocale': ('recognize-synthesize-speech', 'module'),
-            'synthèse vocale': ('recognize-synthesize-speech', 'module'),
-            'traduction de la parole': ('translate-speech-with-speech-service', 'module'),
-            
-            # Responsible AI
-            'ia responsable': ('responsible-ai-principles', 'module'),
-            'responsible ai': ('responsible-ai-principles', 'module'),
-            'principes': ('responsible-ai-principles', 'module'),
-            
-            # Generative AI
-            'ia générative': ('fundamentals-generative-ai', 'module'),
-            'generative ai': ('fundamentals-generative-ai', 'module'),
-            'azure openai': ('explore-azure-openai', 'module'),
-            
-            # Document Intelligence
-            'intelligence des documents': ('explore-document-intelligence', 'path'),
-            'exploration des connaissances': ('explore-knowledge-mining-azure', 'path'),
-            'document intelligence': ('explore-document-intelligence', 'path'),
-        }
-        
-        best_match_slug = None
-        best_match_type = None
-        best_score = 0
-
-        # Recherche dans le nom du module et de l'unité
-        combined_text = f"{module_name_lower} {unit_name_lower}"
-        
-        for key_phrase, (slug, item_type) in precise_url_mapping.items():
-            if key_phrase in combined_text:
-                current_score = len(key_phrase)
-                # Bonus si trouvé dans l'unité (plus spécifique)
-                if key_phrase in unit_name_lower:
-                    current_score += 10
-                
-                if current_score > best_score:
-                    best_score = current_score
-                    best_match_slug = slug
-                    best_match_type = item_type
-
-        if best_match_slug:
-            if best_match_type == 'module':
-                return f"https://learn.microsoft.com/fr-fr/training/modules/{best_match_slug}/"
-            elif best_match_type == 'path':
-                return f"https://learn.microsoft.com/fr-fr/training/paths/{best_match_slug}/"
-        
-        # Fallback
-        return "https://learn.microsoft.com/fr-fr/credentials/certifications/azure-ai-fundamentals/"
-    
-    def extract_key_concepts(self, question_text: str) -> List[str]:
-        """Extrait les concepts clés d'une question AI-900"""
-        text_lower = question_text.lower()
-        
-        ai900_concepts = {
-            'machine_learning': ['machine learning', 'apprentissage automatique', 'ml', 'algorithme', 'supervisé', 'non supervisé', 'renforcement'],
-            'computer_vision': ['computer vision', 'vision par ordinateur', 'image', 'photo', 'détection', 'reconnaissance', 'classification', 'objets', 'texte', 'ocr'],
-            'nlp': ['natural language processing', 'nlp', 'traitement du langage', 'texte', 'sentiment', 'langue', 'traduction', 'compréhension du langage'],
-            'speech': ['speech', 'parole', 'voix', 'audio', 'reconnaissance vocale', 'synthèse vocale'],
-            'bot': ['bot', 'chatbot', 'conversation', 'bot framework', 'azure bot service'],
-            'cognitive_services': ['cognitive services', 'services cognitifs', 'api', 'azure'],
-            'responsible_ai': ['responsible ai', 'ia responsable', 'éthique', 'biais', 'fairness', 'principes'],
-            'azure': ['azure', 'microsoft azure', 'cloud', 'service'],
-            'generative_ai': ['ia générative', 'generative ai', 'openai service', 'gpt'],
-            'document_intelligence': ['intelligence des documents', 'exploration des connaissances', 'form recognizer'],
-        }
-        
-        found_concepts = []
-        for concept_key, synonyms in ai900_concepts.items():
-            for synonym in synonyms:
-                if synonym in text_lower:
-                    found_concepts.append(concept_key)
-                    break
-        
-        return list(set(found_concepts))
-    
-    def find_best_sources(self, question_text: str, top_k: int = 5) -> list[tuple[str, float]]:
-        """
-        Trouve les meilleures sources pour une question donnée, avec scores.
-
-        Args:
-            question_text: La question à rechercher.
-            top_k: Nombre maximal de sources à retourner.
-
-        Returns:
-            Liste de tuples (url, score) ordonnée du meilleur au moins bon.
-        """
-        if not self.is_loaded or self.content_df is None or self.vectorizer is None:
-            print(f"⚠️  WARNING: Base de données non chargée, utilisation du fallback")
-            return [(self.get_fallback_url(question_text), 0.0)]
+    def find_relevant_sources(self, question_text: str, max_sources: int = 3) -> List[Dict]:
+        """Trouve les sources les plus pertinentes pour une question"""
+        if not self.is_loaded:
+            print("⚠️  SourceMatcher non chargé")
+            return []
         
         try:
-            question_vector = self.vectorizer.transform([question_text.lower()])
-            similarities = cosine_similarity(question_vector, self.content_vectors).flatten()
-            top_indices = np.argsort(similarities)[::-1]
+            # Préparer le texte de la question
+            query_text = question_text.lower()
             
-            concepts = self.extract_key_concepts(question_text)
+            # Vectoriser la question
+            query_vector = self.vectorizer.transform([query_text])
             
-            scored_sources = []
+            # Calculer les similarités
+            similarities = cosine_similarity(query_vector, self.content_vectors).flatten()
             
-            for rank, idx in enumerate(top_indices):
-                if rank >= top_k:
+            # Obtenir les indices des sources les plus pertinentes
+            top_indices = np.argsort(similarities)[::-1][:max_sources * 2]  # Prendre plus pour filtrer
+            
+            relevant_sources = []
+            seen_urls = set()
+            
+            for idx in top_indices:
+                if len(relevant_sources) >= max_sources:
                     break
+                
+                similarity = similarities[idx]
+                if similarity > 0.1:  # Seuil de pertinence
+                    row = self.content_df.iloc[idx]
+                    source_url = row['source_url']
                     
-                base_score = similarities[idx]
-                row = self.content_df.iloc[idx]
-                url = row['url']
-                module_name = row['module_name'].lower()
-                unit_name = row['unit_name'].lower()
-                content = row['content'].lower()
-                
-                final_score = base_score + (top_k - rank) * 0.02
-                
-                for concept in concepts:
-                    concept_text = concept.replace('_', ' ')
-                    if concept_text in module_name:
-                        final_score += 0.5
-                    if concept_text in unit_name:
-                        final_score += 0.7
-                    elif concept_text in content:
-                        final_score += 0.2
-                
-                if '/training/modules/' in url:
-                    final_score += 0.1
-                elif '/training/paths/' in url:
-                    final_score += 0.05
-                elif '/credentials/certifications/' in url:
-                    final_score -= 0.1
-                
-                final_score = max(0.0, final_score)
-                
-                if final_score > 0.05:
-                    scored_sources.append((url, final_score))
+                    # Éviter les doublons d'URLs
+                    if source_url not in seen_urls:
+                        relevant_sources.append({
+                            'url': source_url,
+                            'title': f"{row['module_name']} - {row['unit_name']}",
+                            'similarity': float(similarity),
+                            'content_preview': row['content'][:200] + "..." if len(row['content']) > 200 else row['content']
+                        })
+                        seen_urls.add(source_url)
             
-            if not scored_sources:
-                # Aucun bon score, fallback unique
-                scored_sources = [(self.get_fallback_url(question_text), 0.0)]
+            print(f"🔍 Trouvé {len(relevant_sources)} sources pour la question")
+            return relevant_sources
             
-            return scored_sources
-        
         except Exception as e:
-            print(f"❌ ERREUR lors de la recherche des meilleures sources: {e}")
-            return [(self.get_fallback_url(question_text), 0.0)]
-
-    
-    def get_fallback_url(self, question_text: str = "") -> str:
-        """Retourne une URL de fallback basée sur l'analyse de la question"""
-        fallback_urls = {
-            'computer_vision': "https://learn.microsoft.com/fr-fr/training/paths/explore-computer-vision-microsoft-azure/",
-            'nlp': "https://learn.microsoft.com/fr-fr/training/paths/explore-natural-language-processing/",
-            'speech': "https://learn.microsoft.com/fr-fr/training/modules/recognize-synthesize-speech/",
-            'bot': "https://learn.microsoft.com/fr-fr/training/modules/build-chat-bot-with-azure-bot-service/",
-            'machine_learning': "https://learn.microsoft.com/fr-fr/training/modules/get-started-ai-fundamentals/",
-            'responsible_ai': "https://learn.microsoft.com/fr-fr/training/modules/responsible-ai-principles/",
-            'generative_ai': "https://learn.microsoft.com/fr-fr/training/modules/fundamentals-generative-ai/",
-            'document_intelligence': "https://learn.microsoft.com/fr-fr/training/paths/explore-document-intelligence/",
-            'default': "https://learn.microsoft.com/fr-fr/credentials/certifications/azure-ai-fundamentals/"
-        }
-        
-        if question_text:
-            concepts = self.extract_key_concepts(question_text)
-            for concept in concepts:
-                if concept in fallback_urls:
-                    return fallback_urls[concept]
-        
-        return fallback_urls['default']
-
-# Instance globale avec gestion d'erreurs
-def get_source_matcher():
-    """Factory function pour obtenir une instance du matcher"""
-    # Essai de plusieurs chemins possibles pour le CSV
-    possible_csv_paths = [
-        "tools/ai900_content.csv",
-        "ai900_content.csv",
-        os.path.join(os.path.dirname(__file__), "ai900_content.csv")
-    ]
-    
-    for csv_path in possible_csv_paths:
-        if os.path.exists(csv_path):
-            return AI900SourceMatcher(csv_path)
-    
-    # Si aucun CSV trouvé, créer quand même l'instance (elle utilisera les fallbacks)
-    print("⚠️  WARNING: Aucun fichier CSV AI-900 trouvé, utilisation des URLs de fallback")
-    return AI900SourceMatcher()
-
-# Instance globale
-source_matcher = get_source_matcher()
+            print(f"❌ Erreur lors de la recherche de sources : {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
 @tool
-def add_sources_to_quiz_tool(quiz_questions_json_string: str, max_sources: int = 3) -> str:
+def add_sources_to_quiz_tool(quiz_json: str, max_sources: int = 3) -> str:
     """
-    Prend une chaîne JSON de questions de quiz et ajoute des sources pertinentes à chaque question
-    en utilisant la base de données locale AI-900 pour une recherche sémantique.
-
-    Args:
-        quiz_questions_json_string: Une chaîne JSON représentant la liste des questions du quiz.
-        max_sources: Nombre maximal de sources à ajouter par question (par défaut 3).
-
-    Returns:
-        Une chaîne JSON des questions du quiz mises à jour, incluant les URL de source.
-    """
-    global source_matcher
+    Ajoute des sources pertinentes à chaque question du quiz en utilisant 
+    la base de données locale AI-900.
     
+    Args:
+        quiz_json: JSON du quiz généré
+        max_sources: Nombre maximum de sources par question (défaut: 3)
+    
+    Returns:
+        JSON du quiz enrichi avec sources
+    """
     try:
-        questions = json.loads(quiz_questions_json_string)
+        print(f"🔗 Début de l'ajout de sources (max {max_sources} par question)")
+        
+        # Parser le JSON d'entrée
+        try:
+            quiz_data = json.loads(quiz_json)
+        except json.JSONDecodeError as e:
+            print(f"❌ Erreur de parsing JSON : {e}")
+            return quiz_json  # Retourner le JSON original si erreur
+        
+        # Extraire les questions selon le format
+        if "questions" in quiz_data:
+            questions = quiz_data["questions"]
+            has_metadata = True
+        elif isinstance(quiz_data, list):
+            questions = quiz_data
+            has_metadata = False
+        else:
+            print("❌ Format de quiz non reconnu")
+            return quiz_json
+        
+        if not questions:
+            print("⚠️  Aucune question trouvée dans le quiz")
+            return quiz_json
+        
+        print(f"📝 Traitement de {len(questions)} questions")
+        
+        # Initialiser le matcher de sources
+        source_matcher = SourceMatcher()
         
         if not source_matcher.is_loaded:
-            print("⚠️  WARNING: Matcher non chargé, rechargement...")
-            source_matcher = get_source_matcher()
+            print("⚠️  Impossible de charger les sources, retour du quiz original")
+            return quiz_json
         
-        updated_questions = []
-        for i, q in enumerate(questions):
-            question_text = q.get('question', '')
-            print(f"🔍 Traitement question {i+1}/{len(questions)}: '{question_text[:50]}...'")
-            
-            # Trouver les meilleures sources (liste de tuples)
-            best_sources = source_matcher.find_best_sources(question_text, top_k=max_sources)
-            
-            # Extraire uniquement les URLs
-            source_urls = [url for url, score in best_sources]
-            confidence_scores = [round(score, 3) for url, score in best_sources]
-            
-            print(f"✅ Sources trouvées (scores): {list(zip(source_urls, confidence_scores))}")
-            
-            # Ajouter les informations de source sous forme de liste
-            q['source_urls'] = source_urls
-            q['source_confidences'] = confidence_scores
-            
-            updated_questions.append(q)
+        # Traiter chaque question
+        questions_with_sources = []
+        total_sources_added = 0
         
-        print(f"🎉 Traitement terminé: {len(updated_questions)} questions avec sources")
-        return json.dumps(updated_questions, indent=2, ensure_ascii=False)
-    
-    except json.JSONDecodeError as e:
-        error_msg = f"❌ ERREUR JSON: {e}. Entrée: {quiz_questions_json_string[:200]}..."
-        print(error_msg)
-        return error_msg
+        for i, question in enumerate(questions):
+            question_copy = question.copy()
+            
+            # Créer le texte de recherche (question + explication pour plus de contexte)
+            search_text = question.get('question', '')
+            explanation = question.get('explanation', '')
+            if explanation:
+                search_text += " " + explanation
+            
+            # Trouver les sources pertinentes
+            relevant_sources = source_matcher.find_relevant_sources(search_text, max_sources)
+            
+            if relevant_sources:
+                # Ajouter les sources à la question
+                question_copy['sources'] = {
+                    'urls': [source['url'] for source in relevant_sources],
+                    'details': relevant_sources,
+                    'count': len(relevant_sources)
+                }
+                total_sources_added += len(relevant_sources)
+                print(f"  ✅ Question {i+1}: {len(relevant_sources)} sources ajoutées")
+            else:
+                # Même sans sources, ajouter une structure vide pour la cohérence
+                question_copy['sources'] = {
+                    'urls': [],
+                    'details': [],
+                    'count': 0
+                }
+                print(f"  ⚠️  Question {i+1}: Aucune source pertinente trouvée")
+            
+            questions_with_sources.append(question_copy)
+        
+        # Reconstruire le JSON final
+        if has_metadata:
+            quiz_data["questions"] = questions_with_sources
+            # Ajouter des métadonnées sur les sources
+            if "quiz_info" not in quiz_data:
+                quiz_data["quiz_info"] = {}
+            quiz_data["quiz_info"]["sources_added"] = total_sources_added
+            quiz_data["quiz_info"]["avg_sources_per_question"] = round(total_sources_added / len(questions), 2) if len(questions) > 0 else 0
+            final_result = quiz_data
+        else:
+            final_result = questions_with_sources
+        
+        print(f"🎉 Ajout de sources terminé : {total_sources_added} sources au total")
+        
+        return json.dumps(final_result, ensure_ascii=False, indent=2)
+        
     except Exception as e:
-        error_msg = f"❌ ERREUR générale: {e}. Entrée: {quiz_questions_json_string[:200]}..."
-        print(error_msg)
-        return error_msg
-
+        print(f"❌ Erreur lors de l'ajout de sources : {e}")
+        import traceback
+        traceback.print_exc()
+        # En cas d'erreur, retourner le quiz original plutôt que d'échouer
+        return quiz_json
 
 @tool
-def reload_ai900_database(csv_path: str = "ai900_content.csv") -> str:
+def test_source_matching(question_text: str, max_sources: int = 5) -> str:
     """
-    Recharge la base de données AI-900 depuis un nouveau fichier CSV
+    Teste la fonction de matching de sources pour une question donnée.
+    Utile pour déboguer et optimiser la pertinence des sources.
     
     Args:
-        csv_path: Chemin vers le nouveau fichier CSV
+        question_text: Texte de la question à tester
+        max_sources: Nombre maximum de sources à retourner (défaut: 5)
+    
     Returns:
-        Message de confirmation
+        Résultats du matching formatés
     """
-    global source_matcher
     try:
-        source_matcher = AI900SourceMatcher(csv_path)
-        if source_matcher.is_loaded:
-            return f"✅ Base de données AI-900 rechargée depuis {csv_path} ({len(source_matcher.content_df)} entrées)"
+        print(f"🧪 Test de matching pour : {question_text[:100]}...")
+        
+        source_matcher = SourceMatcher()
+        
+        if not source_matcher.is_loaded:
+            return "❌ SourceMatcher non chargé - vérifiez le fichier CSV"
+        
+        sources = source_matcher.find_relevant_sources(question_text, max_sources)
+        
+        result = f"🔍 Résultats du matching de sources :\n\n"
+        result += f"📋 Question testée : {question_text}\n\n"
+        result += f"📊 Sources trouvées : {len(sources)}\n\n"
+        
+        if sources:
+            for i, source in enumerate(sources, 1):
+                result += f"{i}. **{source['title']}**\n"
+                result += f"   - URL : {source['url']}\n"
+                result += f"   - Similarité : {source['similarity']:.3f}\n"
+                result += f"   - Aperçu : {source['content_preview'][:150]}...\n\n"
         else:
-            return f"❌ Échec du rechargement depuis {csv_path}"
+            result += "⚠️  Aucune source pertinente trouvée\n"
+        
+        return result
+        
     except Exception as e:
-        return f"❌ Erreur lors du rechargement: {e}"
+        print(f"❌ Erreur lors du test : {e}")
+        import traceback
+        traceback.print_exc()
+        return f"❌ Erreur lors du test : {e}"
 
-@tool
-def check_ai900_database_status() -> str:
+# Fonction utilitaire pour vérifier le CSV
+def check_csv_structure(csv_path: str = "tools/ai900_content.csv") -> str:
     """
-    Vérifie le statut de la base de données AI-900
-    
-    Returns:
-        Statut de la base de données
+    Vérifie la structure du CSV et affiche des informations utiles pour le debug
     """
-    global source_matcher
+    try:
+        # Essayer plusieurs chemins possibles
+        possible_paths = [
+            csv_path,
+            os.path.join(os.path.dirname(__file__), "ai900_content.csv"),
+            os.path.join(os.getcwd(), "tools", "ai900_content.csv"),
+            "ai900_content.csv"
+        ]
+        
+        csv_found = False
+        actual_path = ""
+        for path in possible_paths:
+            if os.path.exists(path):
+                actual_path = path
+                csv_found = True
+                break
+        
+        if not csv_found:
+            return f"❌ CSV non trouvé dans les chemins : {possible_paths}"
+        
+        # Charger et analyser le CSV
+        df = pd.read_csv(actual_path)
+        
+        info = f"✅ CSV trouvé à : {actual_path}\n"
+        info += f"📊 Nombre de lignes : {len(df)}\n"
+        info += f"📋 Colonnes : {list(df.columns)}\n"
+        info += f"🔍 Aperçu des première lignes :\n"
+        info += str(df.head(2).to_string()) + "\n"
+        
+        # Vérifier les colonnes requises
+        required_columns = ['module_name', 'unit_name', 'content', 'source_url']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            info += f"❌ Colonnes manquantes : {missing_columns}\n"
+        else:
+            info += f"✅ Toutes les colonnes requises sont présentes\n"
+            
+        # Vérifier les valeurs nulles
+        null_counts = df[required_columns].isnull().sum()
+        info += f"🔍 Valeurs nulles par colonne :\n{null_counts}\n"
+        
+        # Statistiques sur le contenu
+        df_clean = df.dropna(subset=['content'])
+        info += f"📊 Lignes avec contenu valide : {len(df_clean)}\n"
+        
+        return info
+        
+    except Exception as e:
+        return f"❌ Erreur lors de la vérification du CSV : {e}"
+
+if __name__ == "__main__":
+    # Test rapide du module
+    print("🧪 Test du module source_adder_tool")
+    print(check_csv_structure())
     
-    if source_matcher.is_loaded:
-        return f"✅ Base de données chargée: {len(source_matcher.content_df)} entrées depuis {source_matcher.csv_path}"
-    else:
-        return f"❌ Base de données non chargée. Fichier recherché: {source_matcher.csv_path}"
+    # Test de base
+    test_question = "Qu'est-ce que l'intelligence artificielle?"
+    print(f"\n🔍 Test avec la question : {test_question}")
+    print(test_source_matching(test_question, 3))

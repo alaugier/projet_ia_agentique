@@ -59,6 +59,7 @@ class TopicContextExtractor:
             required_columns = ['module_name', 'unit_name', 'content', 'source_url']
             if not all(col in self.content_df.columns for col in required_columns):
                 print(f"⚠️  TopicContextExtractor: Colonnes manquantes dans le CSV")
+                print(f"Colonnes disponibles: {list(self.content_df.columns)}")
                 return
             
             # Nettoyer les données
@@ -68,8 +69,7 @@ class TopicContextExtractor:
             self.content_df['combined_text'] = (
                 self.content_df['module_name'].astype(str) + " " + 
                 self.content_df['unit_name'].astype(str) + " " + 
-                self.content_df['content'].astype(str) + " " + 
-                self.content_df['source_url'].astype(str)
+                self.content_df['content'].astype(str)
             ).str.lower()
             
             # Initialiser le vectorizer avec stop words français et anglais
@@ -78,12 +78,12 @@ class TopicContextExtractor:
             combined_stopwords = list(french_stopwords.union(english_stopwords))
             
             self.vectorizer = TfidfVectorizer(
-                max_features=3000,
+                max_features=5000,
                 stop_words=combined_stopwords,
-                ngram_range=(1, 3),  # Utiliser des n-grammes pour capturer des concepts multi-mots
+                ngram_range=(1, 3),
                 min_df=1,
                 max_df=0.85,
-                token_pattern=r'\b[a-zA-ZÀ-ÿ]{2,}\b'  # Support des caractères accentués
+                token_pattern=r'\b[a-zA-ZÀ-ÿ]{2,}\b'
             )
             
             self.content_vectors = self.vectorizer.fit_transform(self.content_df['combined_text'])
@@ -100,7 +100,6 @@ class TopicContextExtractor:
     
     def _build_topic_contexts(self):
         """Construit des contextes thématiques pré-calculés"""
-        # Définir les thèmes principaux et leurs mots-clés
         theme_keywords = {
             'computer_vision': ['computer vision', 'vision par ordinateur', 'image', 'photo', 'détection', 
                                'reconnaissance', 'classification', 'objets', 'texte', 'ocr', 'form recognizer',
@@ -126,10 +125,10 @@ class TopicContextExtractor:
         for theme, keywords in theme_keywords.items():
             self.topic_contexts[theme] = self._extract_context_for_keywords(keywords)
     
-    def _extract_context_for_keywords(self, keywords: List[str], top_k: int = 10) -> Dict:
-        """Extrait le contexte pour une liste de mots-clés"""
+    def _extract_context_for_keywords(self, keywords: List[str], top_k: int = 15) -> Dict:
+        """Extrait le contexte pour une liste de mots-clés avec URLs sources"""
         if not self.is_loaded:
-            return {'examples': [], 'key_concepts': keywords, 'context_strength': 0.0}
+            return {'examples': [], 'key_concepts': keywords, 'context_strength': 0.0, 'source_urls': []}
         
         query = ' '.join(keywords)
         query_vector = self.vectorizer.transform([query.lower()])
@@ -137,16 +136,23 @@ class TopicContextExtractor:
         top_indices = np.argsort(similarities)[::-1][:top_k]
         
         examples = []
+        source_urls = set()  # Utiliser un set pour éviter les doublons
         total_similarity = 0.0
         
         for idx in top_indices:
-            if similarities[idx] > 0.05:
+            if similarities[idx] > 0.03:  # Seuil plus bas pour capturer plus de contexte
                 row = self.content_df.iloc[idx]
+                
+                # Ajouter l'URL source si elle existe et est valide
+                source_url = row.get('source_url', '').strip()
+                if source_url and source_url != 'N/A' and source_url.startswith('http'):
+                    source_urls.add(source_url)
+                
                 examples.append({
                     'module': row['module_name'],
                     'unit': row['unit_name'],
-                    'content_snippet': row['content'][:200] + "..." if len(row['content']) > 200 else row['content'],
-                    'source_url': row.get('source_url', 'N/A'),
+                    'content_snippet': row['content'][:300] + "..." if len(row['content']) > 300 else row['content'],
+                    'source_url': source_url,
                     'similarity': float(similarities[idx])
                 })
                 total_similarity += similarities[idx]
@@ -155,44 +161,59 @@ class TopicContextExtractor:
             'examples': examples,
             'key_concepts': keywords,
             'context_strength': float(total_similarity / len(examples)) if examples else 0.0,
-            'num_relevant_sources': len(examples)
+            'num_relevant_sources': len(examples),
+            'source_urls': list(source_urls)  # Convertir le set en liste
         }
     
     def get_topic_context(self, topic: str, user_query: str = "") -> Dict:
         """Obtient le contexte pour un topic donné, avec recherche dynamique si nécessaire"""
-        # Normaliser le topic
         topic_normalized = topic.lower().replace(' ', '_').replace('-', '_')
-        
-        # Si on a un contexte pré-calculé, l'utiliser
         if topic_normalized in self.topic_contexts:
             context = self.topic_contexts[topic_normalized].copy()
         else:
-            # Recherche dynamique basée sur le topic et la requête utilisateur
             search_terms = [topic]
             if user_query:
                 search_terms.append(user_query)
-            
-            # Extraire des mots-clés de la requête utilisateur
             query_keywords = self._extract_keywords_from_query(user_query) if user_query else []
             search_terms.extend(query_keywords)
-            
             context = self._extract_context_for_keywords(search_terms)
         
         # Enrichir avec une recherche spécifique si on a une requête utilisateur
         if user_query and self.is_loaded:
-            user_context = self._extract_context_for_keywords([user_query], top_k=5)
-            # Fusionner les contextes
-            context['examples'].extend(user_context['examples'][:3])  # Ajouter les 3 meilleurs
+            user_context = self._extract_context_for_keywords([user_query], top_k=8)
+            context['examples'].extend(user_context['examples'][:5])
+            context['source_urls'].extend(user_context['source_urls'])
+            context['source_urls'] = list(set(context['source_urls']))  # Supprimer les doublons
             context['context_strength'] = max(context['context_strength'], user_context['context_strength'])
         
+        # S'assurer que toutes les clés nécessaires existent
+        default_keys = {
+            'context_strength': 0.0,
+            'num_relevant_sources': len(context.get('source_urls', [])),
+            'source_urls': [],
+            'key_concepts': [],
+            'examples': []
+        }
+        
+        for key, default_value in default_keys.items():
+            if key not in context:
+                context[key] = default_value
+        
+        # Mettre à jour num_relevant_sources avec le nombre réel de sources
+        context['num_relevant_sources'] = len(context['source_urls'])
+        
         return context
+    
+    def get_sources_for_topic(self, topic: str, user_query: str = "", max_sources: int = 5) -> List[str]:
+        """Récupère les URLs sources les plus pertinentes pour un topic"""
+        context = self.get_topic_context(topic, user_query)
+        return context['source_urls'][:max_sources]
     
     def _extract_keywords_from_query(self, query: str) -> List[str]:
         """Extrait des mots-clés pertinents d'une requête utilisateur"""
         if not self.is_loaded:
             return []
         
-        # Utiliser le vocabulaire du vectorizer pour identifier les termes pertinents
         query_words = query.lower().split()
         vocabulary = set(self.vectorizer.vocabulary_.keys())
         
@@ -207,14 +228,11 @@ class LLMQuestionGenerator:
     def __init__(self, model_instance=None):
         """
         Initialise le générateur avec une instance de modèle et un extracteur de contexte.
-        Args:
-            model_instance: Instance du modèle LLM (OpenAIServerModel).
         """
         self.model = model_instance
         self.topic_extractor = TopicContextExtractor()
         
         if not self.model:
-            # Fallback: créer une instance avec les credentials d'environnement
             api_key = os.getenv("MISTRAL_API_KEY")
             if api_key:
                 print("DEBUG: Tentative de création d'OpenAIServerModel via MISTRAL_API_KEY.")
@@ -222,7 +240,7 @@ class LLMQuestionGenerator:
                     api_key=api_key,
                     model_id="mistral-medium-latest",
                     api_base="https://api.mistral.ai/v1",
-                    max_tokens=2048,
+                    max_tokens=3000,
                     temperature=0.7,
                 )
             else:
@@ -230,7 +248,7 @@ class LLMQuestionGenerator:
 
     def generate_questions(self, topic: str, num_questions: int, difficulty: str, language: str) -> List[Dict]:
         """
-        Génère une liste de questions de quiz en utilisant le contexte thématique de la base de données.
+        Génère une liste de questions de quiz avec sources URLs obligatoires.
         """
         if self.model is None:
             print("ERROR: Le modèle LLM n'est pas initialisé dans LLMQuestionGenerator.")
@@ -242,46 +260,72 @@ class LLMQuestionGenerator:
         print(f"🎯 Contexte thématique pour '{topic}':")
         print(f"   - Force du contexte: {topic_context['context_strength']:.3f}")
         print(f"   - Sources pertinentes: {topic_context['num_relevant_sources']}")
+        print(f"   - URLs sources disponibles: {len(topic_context['source_urls'])}")
         
-        # Construire le prompt enrichi avec le contexte
+        # Construire le contexte documentaire enrichi
         context_examples = ""
+        source_urls_list = []
+        
         if topic_context['examples']:
-            context_examples = "\n\nContexte spécialisé basé sur la documentation officielle Microsoft AI-900 :\n"
-            for i, example in enumerate(topic_context['examples'][:3], 1):  # Limiter à 3 exemples
+            context_examples = "\n\n=== CONTEXTE DOCUMENTAIRE OFFICIEL MICROSOFT AI-900 ===\n"
+            for i, example in enumerate(topic_context['examples'][:5], 1):
                 context_examples += f"{i}. Module: {example['module']}\n"
                 context_examples += f"   Unité: {example['unit']}\n"
-                context_examples += f"   Contenu: {example['content_snippet']}\n\n"
+                context_examples += f"   Contenu: {example['content_snippet']}\n"
+                if example['source_url']:
+                    context_examples += f"   Source: {example['source_url']}\n"
+                    source_urls_list.append(example['source_url'])
+                context_examples += f"   Pertinence: {example['similarity']:.3f}\n\n"
         
-        # Créer des concepts clés spécifiques au contexte
-        key_concepts = ", ".join(topic_context['key_concepts'][:10])  # Limiter à 10 concepts
+        # Sources URL disponibles
+        available_sources = "\n".join(topic_context['source_urls'][:10])
+        key_concepts = ", ".join(topic_context['key_concepts'][:12])
         
         prompt_template = """
-Tu es un expert certifié Microsoft AI-900 qui génère des questions d'examen officielles.
-Génère {num_questions} questions à choix multiples en {language} sur le thème '{topic}'.
+Tu es un expert certifié Microsoft AI-900 qui génère des questions d'examen officielles avec sources obligatoires.
 
-CONSIGNES STRICTES :
-- Les questions doivent être basées EXCLUSIVEMENT sur le programme officiel Microsoft AI-900
-- Utilise le contexte documentaire fourni ci-dessous pour créer des questions précises et techniques
-- Niveau de difficulté : {difficulty}
-- Focus sur ces concepts clés : {key_concepts}
+MISSION : Génère {num_questions} questions à choix multiples en {language} sur le thème '{topic}'.
+
+CONTRAINTES STRICTES :
+1. Chaque question DOIT inclure une source URL valide de la documentation officielle Microsoft
+2. Les questions doivent être basées sur le contexte documentaire fourni ci-dessous
+3. Niveau de difficulté : {difficulty}
+4. Focus sur ces concepts : {key_concepts}
 
 {context_examples}
 
-Format de réponse requis (JSON valide uniquement) :
+=== SOURCES URLS DISPONIBLES ===
+{available_sources}
+
+=== FORMAT DE RÉPONSE OBLIGATOIRE ===
+Réponds UNIQUEMENT avec un JSON valide respectant cette structure exacte :
+
 [
   {{
-    "question": "Question précise et technique...",
-    "options": ["A. Première option", "B. Deuxième option", "C. Troisième option", "D. Quatrième option"],
+    "question": "Question technique précise basée sur la documentation...",
+    "options": [
+      "A. Première option",
+      "B. Deuxième option", 
+      "C. Troisième option",
+      "D. Quatrième option"
+    ],
     "correct_answer": "A. Première option",
-    "explanation": "Explication détaillée basée sur la documentation Microsoft..."
+    "explanation": "Explication détaillée avec concepts AI-900 officiels...",
+    "source_url": "https://docs.microsoft.com/...",
+    "module": "Nom du module AI-900",
+    "unit": "Nom de l'unité"
   }}
 ]
 
-IMPORTANT : 
+RÈGLES CRITIQUES :
 - Une seule réponse correcte par question
-- Les distracteurs (mauvaises réponses) doivent être plausibles mais clairement incorrects
-- Les explications doivent référencer les concepts AI-900 officiels
-- Pas de commentaires, uniquement le JSON valide
+- source_url est OBLIGATOIRE et doit être une URL valide de la liste fournie
+- Les distracteurs doivent être plausibles mais incorrects
+- Les explications doivent référencer des concepts AI-900 précis
+- module et unit doivent correspondre au contexte documentaire
+- AUCUN texte en dehors du JSON
+
+ATTENTION : Si tu n'inclus pas de source_url valide, la question sera rejetée !
         """
 
         full_prompt = prompt_template.format(
@@ -290,7 +334,8 @@ IMPORTANT :
             difficulty=difficulty,
             language=language,
             key_concepts=key_concepts,
-            context_examples=context_examples
+            context_examples=context_examples,
+            available_sources=available_sources
         )
 
         messages = [{"role": "user", "content": full_prompt}]
@@ -298,7 +343,6 @@ IMPORTANT :
         try:
             response = self.model.generate(messages=messages)
 
-            # Extraction robuste du texte
             if hasattr(response, "content"):
                 quiz_data_str = response.content
             elif isinstance(response, str):
@@ -306,21 +350,19 @@ IMPORTANT :
             else:
                 raise ValueError(f"Type de réponse inattendu du LLM: {type(response)}")
 
-            print(f"🤖 Réponse LLM reçue (premiers 200 chars): {quiz_data_str[:200]}...")
+            print(f"🤖 Réponse LLM reçue (premiers 300 chars): {quiz_data_str[:300]}...")
 
-            # Tentative d'extraction du JSON
+            # Extraction et parsing du JSON
             json_match = re.search(r"```json\n(.*)\n```", quiz_data_str, re.DOTALL)
             if json_match:
                 json_part = json_match.group(1).strip()
                 questions = json.loads(json_part)
             else:
-                # Tentative de trouver un array JSON dans la réponse
                 json_array_match = re.search(r'\[.*\]', quiz_data_str, re.DOTALL)
                 if json_array_match:
                     json_part = json_array_match.group(0)
                     questions = json.loads(json_part)
                 else:
-                    print(f"DEBUG: Tentative de parsing direct du JSON complet")
                     questions = json.loads(quiz_data_str)
 
             if not isinstance(questions, list):
@@ -329,32 +371,34 @@ IMPORTANT :
                 else:
                     raise ValueError(f"Format inattendu: {type(questions)}")
 
-            # Validation et filtrage des questions
+            # Validation et enrichissement des questions
             validated_questions = []
             for i, q in enumerate(questions):
-                if self._validate_question(q, i+1):
+                if self._validate_question_with_sources(q, i+1, topic_context):
+                    # Enrichir avec des sources si manquantes
+                    q = self._enrich_question_with_sources(q, topic_context)
                     validated_questions.append(q)
 
             if not validated_questions:
                 print("WARNING: Aucune question valide après validation")
-                return []
+                # Fallback : générer des questions avec sources automatiques
+                return self._generate_fallback_questions_with_sources(topic, num_questions, topic_context)
 
-            print(f"✅ {len(validated_questions)} questions valides générées pour le thème '{topic}'")
+            print(f"✅ {len(validated_questions)} questions valides avec sources générées")
             return validated_questions[:num_questions]
 
         except json.JSONDecodeError as e:
             print(f"ERROR: Erreur JSON: {e}")
-            print(f"Réponse brute: {quiz_data_str[:500]}...")
-            return []
+            return self._generate_fallback_questions_with_sources(topic, num_questions, topic_context)
         except Exception as e:
             print(f"ERROR: Erreur lors de la génération: {e}")
-            return []
+            return self._generate_fallback_questions_with_sources(topic, num_questions, topic_context)
     
-    def _validate_question(self, question: Dict, question_num: int) -> bool:
-        """Valide une question générée"""
+    def _validate_question_with_sources(self, question: Dict, question_num: int, topic_context: Dict) -> bool:
+        """Valide une question avec vérification des sources"""
         required_fields = ['question', 'options', 'correct_answer', 'explanation']
         
-        # Vérifier la présence des champs obligatoires
+        # Vérifier les champs obligatoires
         for field in required_fields:
             if field not in question:
                 print(f"⚠️  Question {question_num}: Champ manquant '{field}'")
@@ -378,6 +422,68 @@ IMPORTANT :
             return False
         
         return True
+    
+    def _enrich_question_with_sources(self, question: Dict, topic_context: Dict) -> Dict:
+        """Enrichit une question avec les sources manquantes"""
+        # Si pas de source_url, en ajouter une depuis le contexte
+        if 'source_url' not in question or not question['source_url']:
+            if topic_context['source_urls']:
+                question['source_url'] = topic_context['source_urls'][0]
+            else:
+                question['source_url'] = "https://docs.microsoft.com/azure/cognitive-services/"
+        
+        # Ajouter module et unit si manquants
+        if 'module' not in question and topic_context['examples']:
+            question['module'] = topic_context['examples'][0]['module']
+        
+        if 'unit' not in question and topic_context['examples']:
+            question['unit'] = topic_context['examples'][0]['unit']
+        
+        return question
+    
+    def _generate_fallback_questions_with_sources(self, topic: str, num_questions: int, topic_context: Dict) -> List[Dict]:
+        """Génère des questions de fallback avec sources garanties"""
+        print("🚨 Génération de questions de fallback avec sources...")
+        
+        fallback_questions = []
+        available_sources = topic_context['source_urls'] if topic_context['source_urls'] else [
+            "https://docs.microsoft.com/azure/cognitive-services/",
+            "https://docs.microsoft.com/azure/machine-learning/",
+            "https://docs.microsoft.com/azure/bot-service/"
+        ]
+        
+        # Questions de base par thème avec sources
+        base_questions = {
+            'computer_vision': {
+                'question': "Quel service Azure permet d'analyser des images et d'extraire du texte ?",
+                'options': ["A. Computer Vision API", "B. Speech Services", "C. Text Analytics", "D. Bot Framework"],
+                'correct_answer': "A. Computer Vision API",
+                'explanation': "Computer Vision API est le service Azure qui permet d'analyser des images et d'extraire du texte via OCR.",
+                'module': "AI Services",
+                'unit': "Computer Vision"
+            },
+            'nlp': {
+                'question': "Quel service Azure permet d'analyser le sentiment d'un texte ?",
+                'options': ["A. Computer Vision", "B. Text Analytics", "C. Speech Services", "D. Custom Vision"],
+                'correct_answer': "B. Text Analytics",
+                'explanation': "Text Analytics est le service Azure spécialisé dans l'analyse de sentiment et autres tâches NLP.",
+                'module': "AI Services",
+                'unit': "Language Understanding"
+            }
+        }
+        
+        # Générer des questions avec sources
+        for i in range(min(num_questions, len(available_sources))):
+            if topic.lower() in base_questions:
+                question = base_questions[topic.lower()].copy()
+            else:
+                question = base_questions['computer_vision'].copy()  # Fallback par défaut
+            
+            question['source_url'] = available_sources[i % len(available_sources)]
+            fallback_questions.append(question)
+        
+        print(f"✅ {len(fallback_questions)} questions de fallback générées avec sources")
+        return fallback_questions
 
 # Instance globale pour l'utilisation dans les tools
 _global_generator: Optional[LLMQuestionGenerator] = None
@@ -385,8 +491,9 @@ _global_generator: Optional[LLMQuestionGenerator] = None
 @tool
 def set_global_llm_generator(model_instance: OpenAIServerModel) -> None:
     """Définit l'instance du modèle LLM globalement avec support du contexte thématique.
+    
     Args:
-        model_instance: L'instance du modèle LLM à définir (e.g., OpenAIServerModel).
+        model_instance: L'instance du modèle LLM à définir (OpenAIServerModel configuré)
     """
     global _global_generator
     _global_generator = LLMQuestionGenerator(model_instance)
@@ -395,8 +502,9 @@ def set_global_llm_generator(model_instance: OpenAIServerModel) -> None:
 @tool
 def get_global_llm_generator() -> 'LLMQuestionGenerator':
     """Récupère l'instance globale du générateur avec support thématique.
+    
     Returns:
-        Une instance de LLMQuestionGenerator avec TopicContextExtractor.
+        L'instance globale de LLMQuestionGenerator avec extracteur de contexte
     """
     global _global_generator
     if _global_generator is None:
@@ -408,39 +516,88 @@ def get_global_llm_generator() -> 'LLMQuestionGenerator':
             print("DEBUG: Générateur créé mais modèle LLM indisponible.")
     return _global_generator
 
-@tool
 def test_topic_context_extraction(topic: str = "computer_vision", user_query: str = "") -> str:
     """Teste l'extraction de contexte thématique pour un topic donné.
     Args:
         topic: Le thème à tester (ex: 'computer_vision', 'nlp', 'machine_learning')
         user_query: Requête utilisateur optionnelle pour enrichir le contexte
     Returns:
-        Résultats de l'extraction de contexte formatés
+        Résultats de l'extraction de contexte formatés en chaîne de caractères
     """
     try:
         extractor = TopicContextExtractor()
-        
         if not extractor.is_loaded:
             return "❌ TopicContextExtractor non chargé - vérifiez le fichier CSV"
         
         context = extractor.get_topic_context(topic, user_query)
         
+        # Debug pour voir le contenu réel
+        print(f"DEBUG: Type de context: {type(context)}")
+        print(f"DEBUG: Clés disponibles: {list(context.keys()) if isinstance(context, dict) else 'Pas un dict'}")
+        
         result = f"🎯 Contexte thématique pour '{topic}' :\n\n"
         result += f"📊 Statistiques :\n"
-        result += f"   - Force du contexte : {context['context_strength']:.3f}\n"
-        result += f"   - Sources pertinentes : {context['num_relevant_sources']}\n"
-        result += f"   - Concepts clés : {', '.join(context['key_concepts'][:5])}...\n\n"
         
-        if context['examples']:
+        # Accès sécurisé aux clés avec valeurs par défaut
+        context_strength = context.get('context_strength', 0.0)
+        num_relevant_sources = context.get('num_relevant_sources', 0)
+        source_urls = context.get('source_urls', [])
+        key_concepts = context.get('key_concepts', [])
+        examples = context.get('examples', [])
+        
+        result += f"   - Force du contexte : {context_strength:.3f}\n"
+        result += f"   - Sources pertinentes : {num_relevant_sources}\n"
+        result += f"   - URLs sources : {len(source_urls)}\n"
+        result += f"   - Concepts clés : {', '.join(key_concepts[:5])}...\n\n"
+        
+        if source_urls:
+            result += f"🔗 URLs sources disponibles :\n"
+            for i, url in enumerate(source_urls[:5], 1):
+                result += f"{i}. {url}\n"
+            result += "\n"
+            
+        if examples:
             result += f"📚 Exemples de sources pertinentes :\n"
-            for i, example in enumerate(context['examples'][:3], 1):
-                result += f"{i}. {example['module']} > {example['unit']}\n"
-                result += f"   Similarité : {example['similarity']:.3f}\n"
-                result += f"   Extrait : {example['content_snippet'][:100]}...\n\n"
+            for i, example in enumerate(examples[:3], 1):
+                module = example.get('module', 'N/A')
+                unit = example.get('unit', 'N/A')
+                similarity = example.get('similarity', 0.0)
+                source_url = example.get('source_url', 'N/A')
+                content_snippet = example.get('content_snippet', '')[:100]
+                
+                result += f"{i}. {module} > {unit}\n"
+                result += f"   Similarité : {similarity:.3f}\n"
+                result += f"   Source : {source_url}\n"
+                result += f"   Extrait : {content_snippet}...\n\n"
         else:
             result += "⚠️  Aucun exemple trouvé pour ce thème\n"
-        
+            
         return result
         
     except Exception as e:
         return f"❌ Erreur lors du test : {e}"
+
+@tool
+def get_sources_for_topic(topic: str, user_query: str = "", max_sources: int = 5) -> List[str]:
+    """Récupère les URLs sources les plus pertinentes pour un topic donné.
+    
+    Args:
+        topic: Le thème pour lequel récupérer les sources
+        user_query: Requête utilisateur optionnelle pour affiner la recherche
+        max_sources: Nombre maximum de sources à retourner
+        
+    Returns:
+        Liste des URLs sources les plus pertinentes
+    """
+    try:
+        extractor = TopicContextExtractor()
+        if not extractor.is_loaded:
+            return []
+        
+        sources = extractor.get_sources_for_topic(topic, user_query, max_sources)
+        print(f"🔗 {len(sources)} sources trouvées pour le topic '{topic}'")
+        return sources
+        
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération des sources : {e}")
+        return []

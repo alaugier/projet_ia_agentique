@@ -15,10 +15,11 @@ def final_answer_tool(questions_json_string: str) -> str:
         str: Une chaîne Markdown lisible contenant le QCM formaté avec explication et source.
     """
     try:
-        questions = json.loads(questions_json_string)
+        data = json.loads(questions_json_string)
+        questions = data.get("questions", [])
 
         if not isinstance(questions, list):
-            return "❌ Erreur : JSON ne contient pas une liste."
+            return "❌ Erreur : le champ 'questions' est manquant ou invalide."
 
         output = "## 📘 Quiz AI-900 généré\n\n"
         for i, q in enumerate(questions, 1):

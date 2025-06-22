@@ -11,20 +11,25 @@ from dotenv import load_dotenv
 
 from tools.final_answer import final_answer_tool
 from tools.date_tools import get_today_date_french, get_current_time_in_timezone
-from tools.quiz_generator_tool import generate_ai900_quiz_with_local_sources, validate_quiz_quality, get_quiz_statistics
+from tools.quiz_generator_tool import generate_ai900_quiz_with_local_sources
 from tools.ai900_search_tool import search_ai900_knowledge
 from tools.llm_helper import set_global_llm_generator
-from tools.source_adder_tool import add_sources_to_quiz_tool, reload_ai900_database, check_ai900_database_status
+from tools.source_adder_tool import add_sources_to_quiz_tool
 from tools.prepare_json import prepare_json_for_final_answer
 from tools.filter_questions import filter_questions_by_keyword
 from tools.retrieve_sources import retrieve_sources_by_keywords
 from Gradio_UI import GradioUI
-from tools.source_adder_tool import reload_ai900_database
+from tools.final_answer_block import final_answer_block
 
-result = reload_ai900_database("~/projets/hugginface/tools/ai900_content.csv")
+from tools.llm_helper import test_topic_context_extraction
+
+# Test avec un topic existant
+result = test_topic_context_extraction("computer_vision")
 print(result)
 
-print(search_ai900_knowledge("vision par ordinateur"))
+# Test avec un topic personnalisé
+result = test_topic_context_extraction("machine_learning", "azure automated ml")
+print(result)
 
 # Chargement des variables d'environnement depuis .env
 load_dotenv(".env")
@@ -43,15 +48,6 @@ model = OpenAIServerModel(
     max_tokens=2048,
     temperature=0.5,
 )
-
-# Vérification de la base AI-900
-print("🔍 Vérification de la base de données AI-900...")
-from tools.source_adder_tool import source_matcher
-if source_matcher.is_loaded:
-    print(f"✅ Base de données AI-900 prête: {len(source_matcher.content_df)} entrées")
-else:
-    print("⚠️  WARNING: Base de données AI-900 non chargée - les sources utiliseront les URLs de fallback")
-    print("💡 Assurez-vous que le fichier 'ai900_content.csv' est présent dans le dossier 'tools/'")
 
 # Définition d'un outil personnalisé pour test
 @tool
@@ -72,21 +68,18 @@ try:
     agent = CodeAgent(
         model=model,
         tools=[
-            final_answer_tool,
+            final_answer_block,
             generate_ai900_quiz_with_local_sources,
-            validate_quiz_quality,
             retrieve_sources_by_keywords,
             search_ai900_knowledge,
             set_global_llm_generator,
             add_sources_to_quiz_tool,
-            reload_ai900_database,
-            check_ai900_database_status,
             my_custom_tool,
             get_current_time_in_timezone,
             DuckDuckGoSearchTool(),
             get_today_date_french,
             prepare_json_for_final_answer,
-            filter_questions_by_keyword
+            filter_questions_by_keyword,
         ],
         max_steps=10,
         verbosity_level=2,
@@ -106,15 +99,12 @@ except Exception as e:
             agent = CodeAgent(
                 model=model,
                 tools=[
-                    final_answer_tool,
+                    final_answer_block,
                     generate_ai900_quiz_with_local_sources,
-                    validate_quiz_quality,
                     retrieve_sources_by_keywords,
                     search_ai900_knowledge,
                     set_global_llm_generator,
                     add_sources_to_quiz_tool,
-                    reload_ai900_database,
-                    check_ai900_database_status,
                     my_custom_tool,
                     get_current_time_in_timezone,
                     DuckDuckGoSearchTool(),
@@ -146,18 +136,53 @@ except Exception as e:
 
 if __name__ == "__main__":
     from tools.prepare_json import prepare_json_for_final_answer
-    import json
+    from tools.final_answer_block import final_answer_block
 
-    test_questions = [
-        {
-            "question": "Qu'est-ce que la vision par ordinateur ?",
-            "options": ["A. Analyse d’images", "B. Traitement du son", "C. Base de données", "D. Robotique"],
-            "correct_answer": "A. Analyse d’images",
-            "explanation": "Elle permet aux machines de comprendre les images.",
-            "source_url": "https://learn.microsoft.com/azure/cognitive-services/computer-vision"
-        }
-    ]
+    # Appel correct avec tous les paramètres explicites
+    result = generate_ai900_quiz_with_local_sources(
+        topic="nlp", 
+        num_questions=2,
+        difficulty="intermediate",
+        language="french",
+        num_relevant_sources=3,
+        output_format="json"
+    )
+    
+    # Debug pour voir ce que retourne la fonction
+    print(f"Type de result: {type(result)}")
+    print(f"Contenu de result: {result}")
+    
+    # Si result est une string JSON, il faut la parser
+    try:
+        if isinstance(result, str):
+            import json
+            parsed_result = json.loads(result)
+            json_data = prepare_json_for_final_answer(parsed_result.get("questions", []))
+        else:
+            # Si result est déjà un dict
+            json_data = prepare_json_for_final_answer(result.get("questions", []))
+            
+        markdown = final_answer_block(json_data)
+        print(markdown)
+        
+    except Exception as e:
+        print(f"Erreur lors du traitement du résultat: {e}")
+        print(f"Résultat brut: {result}")
 
-    json_str = prepare_json_for_final_answer(test_questions)
-    print(final_answer_tool(json_str))
+# Correction 2: Test plus sûr en début de fichier
+try:
+    # Test avec un topic existant
+    result = test_topic_context_extraction("computer_vision")
+    print("✅ Test computer_vision réussi")
+    print(result)
+except Exception as e:
+    print(f"❌ Erreur test computer_vision: {e}")
+
+try:
+    # Test avec un topic personnalisé
+    result = test_topic_context_extraction("machine_learning", "azure automated ml")
+    print("✅ Test machine_learning réussi")
+    print(result)
+except Exception as e:
+    print(f"❌ Erreur test machine_learning: {e}")
 
