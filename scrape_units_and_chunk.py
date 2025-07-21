@@ -21,15 +21,15 @@ def chunk_text(text, max_tokens=512):
     tokens = tokenizer.encode(text)
     chunks = []
     for i in range(0, len(tokens), max_tokens):
-        chunk_tokens = tokens[i:i+max_tokens]
-        chunk_text = tokenizer.decode(chunk_tokens)
-        chunks.append(chunk_text)
+        chunk_tokens = tokens[i:i + max_tokens]
+        chunk = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+        chunks.append(chunk.strip())
     return chunks
 
 def extract_text_from_url_selenium(url, driver):
     try:
         driver.get(url)
-        time.sleep(3)  # temps pour chargement JS
+        time.sleep(3)  # Laisse le temps au JS de charger
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
 
@@ -41,7 +41,7 @@ def extract_text_from_url_selenium(url, driver):
         text = re.sub(r'\s+', ' ', raw_text)
         return text.strip()
     except Exception as e:
-        print(f"Erreur sur {url} : {e}")
+        print(f"❌ Erreur sur {url} : {e}")
         return ""
 
 def main():
@@ -50,7 +50,7 @@ def main():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
 
-    driver = webdriver.Chrome(options=chrome_options)  # chromedriver doit être accessible
+    driver = webdriver.Chrome(options=chrome_options)
 
     df_units = pd.read_csv("ai900_units_list.csv")
 
