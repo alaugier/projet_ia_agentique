@@ -51,6 +51,7 @@ Ce projet repose sur **SmolAgents**, une architecture orientée agents LLM spéc
 L’interface est lancée avec **Gradio** :
 ```bash
 python app.py
+```
 
 💡 Exemples d’usage en Python
 
