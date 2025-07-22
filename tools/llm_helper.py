@@ -1,4 +1,3 @@
-# tools/llm_helper.py
 import os
 import random
 import re
@@ -12,6 +11,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import nltk
 from nltk.corpus import stopwords
+import urllib.parse
 
 # Assurez-vous que les stop words sont téléchargés
 try:
@@ -22,7 +22,7 @@ except nltk.downloader.DownloadError:
 class TopicContextExtractor:
     """Extrait le contexte thématique depuis la base de données CSV pour guider la génération LLM"""
     
-    def __init__(self, csv_path: str = "tools/ai900_content.csv"):
+    def __init__(self, csv_path: str = "azure_learning_chunks.csv"):
         self.csv_path = csv_path
         self.content_df = None
         self.vectorizer = None
@@ -30,16 +30,15 @@ class TopicContextExtractor:
         self.topic_contexts = {}
         self.is_loaded = False
         self.load_and_process_data()
-    
+
     def load_and_process_data(self):
         """Charge et traite les données pour l'extraction de contexte thématique"""
         try:
-            # Essai de plusieurs chemins possibles
             possible_paths = [
                 self.csv_path,
-                os.path.join(os.path.dirname(__file__), "ai900_content.csv"),
-                os.path.join(os.getcwd(), "tools", "ai900_content.csv"),
-                "ai900_content.csv"
+                os.path.join(os.path.dirname(__file__), "azure_learning_chunks.csv"),
+                os.path.join(os.getcwd(), "tools", "azure_learning_chunks.csv"),
+                "azure_learning_chunks.csv"
             ]
             
             csv_found = False
@@ -55,24 +54,39 @@ class TopicContextExtractor:
             
             self.content_df = pd.read_csv(self.csv_path)
             
-            # Vérifier les colonnes requises
-            required_columns = ['module_name', 'unit_name', 'content', 'source_url']
+            required_columns = ['module_name', 'unit_name', 'unit_url', 'text_chunk']
             if not all(col in self.content_df.columns for col in required_columns):
                 print(f"⚠️  TopicContextExtractor: Colonnes manquantes dans le CSV")
                 print(f"Colonnes disponibles: {list(self.content_df.columns)}")
                 return
+            # Nettoyage plus robuste des URLs
+            def clean_url(url: str) -> str:
+                if not isinstance(url, str):
+                    return ""
+                # Supprimer les guillemets doubles
+                url = url.replace('"', '')
+                # Supprimer espaces début/fin
+                url = url.strip()
+                # Décoder l'URL encodée (%22, %5Cn, etc.)
+                url = urllib.parse.unquote(url)
+                # Supprimer des caractères parasites en fin d'URL
+                # Ici on enlève tout après un éventuel ",", " \n", etc. à la fin
+                url = url.rstrip(", \n\r\t")
+                return url
+
+            # Nettoyer les URLs dans la colonne 'unit_url'
+            self.content_df['unit_url'] = self.content_df['unit_url'].apply(clean_url)
             
-            # Nettoyer les données
+            # Nettoyer les données (drop lignes avec NaN dans colonnes importantes)
             self.content_df = self.content_df.dropna(subset=required_columns)
             
             # Créer un texte combiné pour chaque entrée
             self.content_df['combined_text'] = (
                 self.content_df['module_name'].astype(str) + " " + 
                 self.content_df['unit_name'].astype(str) + " " + 
-                self.content_df['content'].astype(str)
+                self.content_df['text_chunk'].astype(str)
             ).str.lower()
             
-            # Initialiser le vectorizer avec stop words français et anglais
             french_stopwords = set(stopwords.words('french'))
             english_stopwords = set(stopwords.words('english'))
             combined_stopwords = list(french_stopwords.union(english_stopwords))
@@ -88,7 +102,6 @@ class TopicContextExtractor:
             
             self.content_vectors = self.vectorizer.fit_transform(self.content_df['combined_text'])
             
-            # Pré-calculer les contextes pour les thèmes principaux
             self._build_topic_contexts()
             
             self.is_loaded = True
@@ -140,18 +153,18 @@ class TopicContextExtractor:
         total_similarity = 0.0
         
         for idx in top_indices:
-            if similarities[idx] > 0.03:  # Seuil plus bas pour capturer plus de contexte
+            if similarities[idx] > 0.01:  # Seuil plus bas pour capturer plus de contexte
                 row = self.content_df.iloc[idx]
                 
                 # Ajouter l'URL source si elle existe et est valide
-                source_url = row.get('source_url', '').strip()
+                source_url = row.get('unit_url', '').strip()
                 if source_url and source_url != 'N/A' and source_url.startswith('http'):
                     source_urls.add(source_url)
                 
                 examples.append({
                     'module': row['module_name'],
                     'unit': row['unit_name'],
-                    'content_snippet': row['content'][:300] + "..." if len(row['content']) > 300 else row['content'],
+                    'content_snippet': row['text_chunk'][:300] + "..." if len(row['text_chunk']) > 300 else row['text_chunk'],
                     'source_url': source_url,
                     'similarity': float(similarities[idx])
                 })
@@ -519,85 +532,50 @@ def get_global_llm_generator() -> 'LLMQuestionGenerator':
 def test_topic_context_extraction(topic: str = "computer_vision", user_query: str = "") -> str:
     """Teste l'extraction de contexte thématique pour un topic donné.
     Args:
-        topic: Le thème à tester (ex: 'computer_vision', 'nlp', 'machine_learning')
-        user_query: Requête utilisateur optionnelle pour enrichir le contexte
+        topic: Le thème à rechercher
+        user_query: Optionnel, une requête utilisateur spécifique
     Returns:
-        Résultats de l'extraction de contexte formatés en chaîne de caractères
+        String JSON formaté avec les contextes extraits
     """
-    try:
-        extractor = TopicContextExtractor()
-        if not extractor.is_loaded:
-            return "❌ TopicContextExtractor non chargé - vérifiez le fichier CSV"
-        
-        context = extractor.get_topic_context(topic, user_query)
-        
-        # Debug pour voir le contenu réel
-        print(f"DEBUG: Type de context: {type(context)}")
-        print(f"DEBUG: Clés disponibles: {list(context.keys()) if isinstance(context, dict) else 'Pas un dict'}")
-        
-        result = f"🎯 Contexte thématique pour '{topic}' :\n\n"
-        result += f"📊 Statistiques :\n"
-        
-        # Accès sécurisé aux clés avec valeurs par défaut
-        context_strength = context.get('context_strength', 0.0)
-        num_relevant_sources = context.get('num_relevant_sources', 0)
-        source_urls = context.get('source_urls', [])
-        key_concepts = context.get('key_concepts', [])
-        examples = context.get('examples', [])
-        
-        result += f"   - Force du contexte : {context_strength:.3f}\n"
-        result += f"   - Sources pertinentes : {num_relevant_sources}\n"
-        result += f"   - URLs sources : {len(source_urls)}\n"
-        result += f"   - Concepts clés : {', '.join(key_concepts[:5])}...\n\n"
-        
-        if source_urls:
-            result += f"🔗 URLs sources disponibles :\n"
-            for i, url in enumerate(source_urls[:5], 1):
-                result += f"{i}. {url}\n"
-            result += "\n"
-            
-        if examples:
-            result += f"📚 Exemples de sources pertinentes :\n"
-            for i, example in enumerate(examples[:3], 1):
-                module = example.get('module', 'N/A')
-                unit = example.get('unit', 'N/A')
-                similarity = example.get('similarity', 0.0)
-                source_url = example.get('source_url', 'N/A')
-                content_snippet = example.get('content_snippet', '')[:100]
-                
-                result += f"{i}. {module} > {unit}\n"
-                result += f"   Similarité : {similarity:.3f}\n"
-                result += f"   Source : {source_url}\n"
-                result += f"   Extrait : {content_snippet}...\n\n"
-        else:
-            result += "⚠️  Aucun exemple trouvé pour ce thème\n"
-            
-        return result
-        
-    except Exception as e:
-        return f"❌ Erreur lors du test : {e}"
+    extractor = TopicContextExtractor()
+    context = extractor.get_topic_context(topic, user_query)
+    import json
+    return json.dumps(context, indent=2, ensure_ascii=False)
 
-@tool
-def get_sources_for_topic(topic: str, user_query: str = "", max_sources: int = 5) -> List[str]:
-    """Récupère les URLs sources les plus pertinentes pour un topic donné.
-    
-    Args:
-        topic: Le thème pour lequel récupérer les sources
-        user_query: Requête utilisateur optionnelle pour affiner la recherche
-        max_sources: Nombre maximum de sources à retourner
-        
-    Returns:
-        Liste des URLs sources les plus pertinentes
+def summarize_from_context(text: str, model_instance: Optional[OpenAIServerModel] = None) -> str:
     """
+    Fonction pour résumer un texte donné en s’appuyant sur un contexte thématique.
+    Args:
+        text: Le texte à résumer
+        model_instance: (optionnel) instance LLM à utiliser
+    Returns:
+        Résumé texte en string
+    """
+    if model_instance is None:
+        model_instance = get_global_llm_generator().model
+        if model_instance is None:
+            return "⚠️ Modèle LLM non initialisé, impossible de résumer."
+    
+    prompt = f"""
+Tu es un assistant expert Microsoft AI-900.
+
+Résumé synthétique demandé pour le texte suivant, en conservant uniquement les points clés liés à AI-900 :
+
+--- Texte à résumer ---
+{text}
+---
+
+Fournis un résumé clair, concis, en français.
+"""
+    messages = [{"role": "user", "content": prompt}]
     try:
-        extractor = TopicContextExtractor()
-        if not extractor.is_loaded:
-            return []
-        
-        sources = extractor.get_sources_for_topic(topic, user_query, max_sources)
-        print(f"🔗 {len(sources)} sources trouvées pour le topic '{topic}'")
-        return sources
-        
+        response = model_instance.generate(messages=messages)
+        if hasattr(response, "content"):
+            return response.content.strip()
+        elif isinstance(response, str):
+            return response.strip()
+        else:
+            return "⚠️ Réponse inattendue du modèle."
     except Exception as e:
-        print(f"❌ Erreur lors de la récupération des sources : {e}")
-        return []
+        return f"⚠️ Erreur lors de la génération du résumé : {e}"
+
