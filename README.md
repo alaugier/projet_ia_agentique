@@ -53,7 +53,7 @@ L’interface est lancée avec **Gradio** :
 python app.py
 ```
 
-💡 Exemples d’usage en Python
+## 💡 Exemples d’usage en Python
 
 from tools.quiz_generator_tool import generate_ai900_quiz_with_local_sources
 
@@ -66,7 +66,7 @@ quiz = generate_ai900_quiz_with_local_sources(
 )
 print(quiz)
 
-⚙️ Paramètres
+## ⚙️ Paramètres
 
 | Paramètre              | Type  | Description                               | Exemples                                           |
 | ---------------------- | ----- | ----------------------------------------- | -------------------------------------------------- |
@@ -76,7 +76,7 @@ print(quiz)
 | `language`             | `str` | Langue de sortie                          | `"french"` ou `"english"`                          |
 | `num_relevant_sources` | `int` | Nombre de sources documentaires associées | `0-10`                                             |
 
-⚙️ Installation
+## ⚙️ Installation
 
 1. Cloner le dépôt
 
@@ -97,7 +97,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Puis ajouter votre clé API Mistral dans le fichier .env
 
-📁 Arborescence du projet
+## 📁 Arborescence du projet
 
 projet_ia_agentique/
 ├── app.py
@@ -127,8 +127,8 @@ projet_ia_agentique/
     ├── scrape_units_and_chunk.py
     └── vectorize_chunks.py
 
-🔍 Fonctionnalités avancées
-🔬 Extraction contextuelle
+## 🔍 Fonctionnalités avancées
+### 🔬 Extraction contextuelle
 
     TopicContextExtractor analyse sémantiquement les contenus.
 
@@ -136,7 +136,7 @@ projet_ia_agentique/
 
     Recherche par similarité pour retrouver les passages les plus pertinents (avec URL source propre).
 
-🧠 Génération intelligente
+### 🧠 Génération intelligente
 
     Questions adaptées au niveau demandé.
 
@@ -146,14 +146,14 @@ projet_ia_agentique/
 
     Références incluses dans chaque QCM.
 
-🧪 Tests rapides
+## 🧪 Tests rapides
 
-# Générer un quiz simple
+### Générer un quiz simple
 python -c "
 from tools.quiz_generator_tool import generate_ai900_quiz_with_local_sources
 print(generate_ai900_quiz_with_local_sources('computer_vision', 3))
 
-⚠️ Limitations
+## ⚠️ Limitations
 
     API Mistral requise (connexion internet nécessaire).
 
@@ -161,7 +161,7 @@ print(generate_ai900_quiz_with_local_sources('computer_vision', 3))
 
     Non optimisé pour des exécutions massives en parallèle.
 
-📝 Prochaines améliorations
+## 📝 Prochaines améliorations
 
 Vectorisation sémantique (OpenAI, Mistral embeddings ou HuggingFace)
 
