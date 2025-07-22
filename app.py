@@ -14,7 +14,7 @@ from tools.date_tools import get_today_date_french, get_current_time_in_timezone
 from tools.quiz_generator_tool import generate_ai900_quiz_with_local_sources
 from tools.ai900_search_tool import search_ai900_knowledge
 from tools.llm_helper import set_global_llm_generator
-from tools.source_adder_tool import add_sources_to_quiz_tool
+from tools.source_adder_tool import add_precise_sources_to_quiz_tool
 from tools.prepare_json import prepare_json_for_final_answer
 from tools.filter_questions import filter_questions_by_keyword
 from tools.retrieve_sources import retrieve_sources_by_keywords
@@ -73,7 +73,7 @@ try:
             retrieve_sources_by_keywords,
             search_ai900_knowledge,
             set_global_llm_generator,
-            add_sources_to_quiz_tool,
+            add_precise_sources_to_quiz_tool,
             my_custom_tool,
             get_current_time_in_timezone,
             DuckDuckGoSearchTool(),
@@ -104,7 +104,7 @@ except Exception as e:
                     retrieve_sources_by_keywords,
                     search_ai900_knowledge,
                     set_global_llm_generator,
-                    add_sources_to_quiz_tool,
+                    add_precise_sources_to_quiz_tool,
                     my_custom_tool,
                     get_current_time_in_timezone,
                     DuckDuckGoSearchTool(),
