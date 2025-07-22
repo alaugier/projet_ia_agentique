@@ -78,23 +78,25 @@ print(quiz)
 
 ## ⚙️ Installation
 
-1. Cloner le dépôt
+### 1. Cloner le dépôt
 
-git clone https://github.com/alaugier/projet_ia_agentique.git
+```git clone https://github.com/alaugier/projet_ia_agentique.git
 cd projet_ia_agentique
+```
 
-2. Créer l’environnement virtuel
+### 2. Créer l’environnement virtuel
 
-python -m venv env_hf
+```python -m venv env_hf
 source env_hf/bin/activate  # ou env_hf\Scripts\activate pour Windows
+```
 
-3. Installer les dépendances
+### 3. Installer les dépendances
 
 pip install -r requirements.txt
 
-4. Configurer les variables d’environnement
+### 4. Configurer les variables d’environnement
 
-cp .env.example .env
+```cp .env.example .env```
 # Puis ajouter votre clé API Mistral dans le fichier .env
 
 ## 📁 Arborescence du projet
