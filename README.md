@@ -99,6 +99,7 @@ cp .env.example .env
 
 ## 📁 Arborescence du projet
 
+```
 projet_ia_agentique/
 ├── app.py
 ├── Gradio_UI.py
@@ -126,6 +127,7 @@ projet_ia_agentique/
     ├── collect_unit_urls_selenium.py
     ├── scrape_units_and_chunk.py
     └── vectorize_chunks.py
+```
 
 ## 🔍 Fonctionnalités avancées
 ### 🔬 Extraction contextuelle
