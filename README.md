@@ -134,21 +134,21 @@ projet_ia_agentique/
 ## 🔍 Fonctionnalités avancées
 ### 🔬 Extraction contextuelle
 
-    TopicContextExtractor analyse sémantiquement les contenus.
+    - TopicContextExtractor analyse sémantiquement les contenus.
 
-    Vectorisation avec TF-IDF sur les textes pré-nettoyés.
+    - Vectorisation avec TF-IDF sur les textes pré-nettoyés.
 
-    Recherche par similarité pour retrouver les passages les plus pertinents (avec URL source propre).
+    - Recherche par similarité pour retrouver les passages les plus pertinents (avec URL source propre).
 
 ### 🧠 Génération intelligente
 
-    Questions adaptées au niveau demandé.
+    - Questions adaptées au niveau demandé.
 
-    Équilibrage thématique automatique.
+    - Équilibrage thématique automatique.
 
-    Éviction des doublons.
+    - Éviction des doublons.
 
-    Références incluses dans chaque QCM.
+    - Références incluses dans chaque QCM.
 
 ## 🧪 Tests rapides
 
@@ -159,23 +159,23 @@ print(generate_ai900_quiz_with_local_sources('computer_vision', 3))
 
 ## ⚠️ Limitations
 
-    API Mistral requise (connexion internet nécessaire).
+    - API Mistral requise (connexion internet nécessaire).
 
-    Base locale encore limitée à 274 chunks (extensible).
+    - Base locale encore limitée à 274 chunks (extensible).
 
-    Non optimisé pour des exécutions massives en parallèle.
+    - Non optimisé pour des exécutions massives en parallèle.
 
 ## 📝 Prochaines améliorations
 
-Vectorisation sémantique (OpenAI, Mistral embeddings ou HuggingFace)
+- Vectorisation sémantique (OpenAI, Mistral embeddings ou HuggingFace)
 
-Export PDF/Word des QCM
+- Export PDF/Word des QCM
 
-Historique de sessions
+- Historique de sessions
 
-API REST pour intégration externe
+- API REST pour intégration externe
 
-    Version mobile responsive
+- Version mobile responsive
 
 ## 📄 Licence
 
